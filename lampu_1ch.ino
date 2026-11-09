@@ -2,7 +2,7 @@
 #include <WebServer.h>
 
 const char* ssid = "Tenda";
-const char* password = "password_tenda_lu";
+const char* password = "Noke0710";
 
 WebServer server(80);
 
