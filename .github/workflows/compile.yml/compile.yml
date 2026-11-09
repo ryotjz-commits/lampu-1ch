@@ -1,0 +1,16 @@
+name: Compile
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: esp32:esp32:esp32
+          sketch-paths: |
+            - .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-lampu
+          path: build/
