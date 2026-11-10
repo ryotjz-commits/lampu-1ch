@@ -13,9 +13,9 @@
 
 // ========== BLYNK CONFIG ==========
 
-#define BLYNK_TEMPLATE_ID   "ISI_TEMPLATE_ID"
+#define BLYNK_TEMPLATE_ID   "TMPL6Yk8Hycr-"
 #define BLYNK_TEMPLATE_NAME "Novia Home"
-#define BLYNK_AUTH_TOKEN    "ISI_AUTH_TOKEN"
+#define BLYNK_AUTH_TOKEN    "uUhUdnlB22cqJfKinHQu8yGMXLRbgzf1"
 
 #define BLYNK_PRINT Serial
 
