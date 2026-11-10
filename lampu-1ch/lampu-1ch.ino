@@ -25,10 +25,9 @@
 // ==========================================
 // BLYNK CONFIGURATION
 // ==========================================
-
-#define BLYNK_TEMPLATE_ID "ISI_TEMPLATE_ID"
+#define BLYNK_TEMPLATE_ID "TMPL6Yk8Hycr-"
 #define BLYNK_TEMPLATE_NAME "Novia Home"
-#define BLYNK_AUTH_TOKEN "ISI_AUTH_TOKEN"
+#define BLYNK_AUTH_TOKEN "uUhUdnlB22cqJfKinHQu8yGMXLRbgzf1"
 
 #define BLYNK_PRINT Serial
 
@@ -47,7 +46,7 @@
 // ==========================================
 
 const char* AP_SSID = "Novia-Home-Setup";
-const char* AP_PASS = "GantiPasswordAP";
+const char* AP_PASS = "Noke0710";
 
 WebServer server(80);
 DNSServer dnsServer;
