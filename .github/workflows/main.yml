@@ -1,18 +1,45 @@
-name: Compile
-on: [push, workflow_dispatch]
+
+name: Compile Novia Home V3
+
+on:
+  push:
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: arduino/setup-arduino-cli@v2
-      - run: |
-          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 Core
+        run: |
+          arduino-cli core update-index \
+            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
           arduino-cli core install esp32:esp32
+
+      - name: Install Libraries
+        run: |
           arduino-cli lib update-index
           arduino-cli lib install "Blynk"
-          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir ./firmware lampu_1ch
-      - uses: actions/upload-artifact@v4
+
+      - name: Compile Firmware
+        run: |
+          mkdir -p ./firmware
+
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --output-dir ./firmware \
+            ./lampu-1ch
+
+      - name: Upload Firmware
+        uses: actions/upload-artifact@v4
         with:
-          name: firmware-lampu
+          name: firmware-novia-home-v3
           path: ./firmware/
+          if-no-files-found: error
