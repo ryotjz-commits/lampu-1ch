@@ -43,3 +43,4 @@ jobs:
           name: firmware-novia-home-v3
           path: ./firmware/
           if-no-files-found: error
+          
