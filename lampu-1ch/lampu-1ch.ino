@@ -273,37 +273,27 @@ BLYNK_CONNECTED() {
 // ======================================================
 
 void startAccessPoint() {
-
   WiFi.mode(WIFI_AP_STA);
-
-  bool result = WiFi.softAP(
-    AP_SSID,
-    AP_PASS
-  );
-
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  bool result = WiFi.softAP(AP_SSID, AP_PASS);
   if (result) {
-
     Serial.println("Access Point Started");
-
-    Serial.print("AP IP: ");
-    Serial.println(WiFi.softAPIP());
-  }
+    Serial.print("AP SSID: "); Serial.println(AP_SSID);
+    Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
+  } else Serial.println("ERROR: Access Point gagal dimulai");
 }
 
 void connectSavedWiFi() {
-
   if (wifiSSID.length() == 0) {
-
-    Serial.println("WiFi not configured");
+    Serial.println("WiFi belum dikonfigurasi");
     return;
   }
-
-  Serial.println("Connecting saved WiFi...");
-
-  WiFi.begin(
-    wifiSSID.c_str(),
-    wifiPassword.c_str()
-  );
+  Serial.print("Connecting to router SSID: "); Serial.println(wifiSSID);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 }
 
 // ======================================================
@@ -311,37 +301,25 @@ void connectSavedWiFi() {
 // ======================================================
 
 String scanWiFiJSON() {
-
   int count = WiFi.scanNetworks(false, true);
-
   String json = "{\"networks\":[";
-
-  for (int i = 0; i < count; i++) {
-
-    if (i > 0) json += ",";
-
-    String ssid = WiFi.SSID(i);
-
-    ssid.replace("\\", "\\\\");
-    ssid.replace("\"", "\\\"");
-    ssid.replace("\n", " ");
-
-    json += "{\"ssid\":\"";
-    json += ssid;
-    json += "\",\"rssi\":";
-    json += String(WiFi.RSSI(i));
-    json += ",\"secure\":";
-    json += WiFi.encryptionType(i) == WIFI_AUTH_OPEN
-              ? "false"
-              : "true";
-
-    json += "}";
+  if (count > 0) {
+    for (int i = 0; i < count; i++) {
+      if (i > 0) json += ",";
+      String ssid = WiFi.SSID(i);
+      ssid.replace("\\", "\\\\");
+      ssid.replace("\"", "\\\"");
+      ssid.replace("\n", " ");
+      ssid.replace("\r", " ");
+      json += "{\"ssid\":\"" + ssid + "\",\"rssi\":";
+      json += String(WiFi.RSSI(i));
+      json += ",\"secure\":";
+      json += (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "false" : "true";
+      json += "}";
+    }
   }
-
   json += "]}";
-
   WiFi.scanDelete();
-
   return json;
 }
 
@@ -1154,77 +1132,28 @@ void setupRoutes() {
 
   });
 
-  // WIFI SCAN
+  // WIFI SCAN - satu endpoint dengan format JSON konsisten
   server.on("/scan", HTTP_GET, []() {
-
-    server.send(
-      200,
-      "application/json",
-      scanWiFiJSON()
-    );
-
+    server.send(200, "application/json", scanWiFiJSON());
   });
 
-  // WIFI SAVE
-    // WIFI SAVE
+  // WIFI SAVE - namespace/key disamakan dengan loadSettings()
   server.on("/wifi-save", HTTP_POST, []() {
-
     String newSSID = server.arg("ssid");
     String newPassword = server.arg("password");
-
+    if (newPassword.length() == 0 && server.hasArg("pass")) newPassword = server.arg("pass");
     newSSID.trim();
-
     if (newSSID.length() == 0) {
       server.send(400, "text/plain", "SSID tidak boleh kosong");
       return;
     }
-
-    preferences.begin("wifi", false);
+    preferences.begin("novia", false);
     preferences.putString("ssid", newSSID);
-    preferences.putString("password", newPassword);
+    preferences.putString("pass", newPassword);
     preferences.end();
-
-    server.send(
-      200,
-      "text/plain",
-      "Konfigurasi WiFi disimpan. ESP32 akan restart..."
-    );
-
-    delay(1000);
+    server.send(200, "text/plain", "Konfigurasi WiFi tersimpan. ESP32 akan restart dan mencoba terhubung ke router.");
+    delay(700);
     ESP.restart();
-  });
-
-
-  // WIFI SCAN
-  server.on("/scan", HTTP_GET, []() {
-
-    int networks = WiFi.scanNetworks();
-
-    String json = "[";
-
-    for (int i = 0; i < networks; i++) {
-
-      if (i > 0) json += ",";
-
-      String ssid = WiFi.SSID(i);
-      ssid.replace("\\", "\\\\");
-      ssid.replace("\"", "\\\"");
-      ssid.replace("\n", "");
-
-      json += "{";
-      json += "\"ssid\":\"" + ssid + "\",";
-      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-      json += "\"secure\":" + String(
-        WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "false" : "true"
-      );
-      json += "}";
-    }
-
-    json += "]";
-
-    WiFi.scanDelete();
-
-    server.send(200, "application/json", json);
   });
 
 
@@ -1744,7 +1673,8 @@ async function scanWifi() {
 
   try {
     const response = await request('/scan');
-    const networks = await response.json();
+    const scanResult = await response.json();
+    const networks = scanResult.networks || [];
 
     select.innerHTML = '';
 
@@ -1907,23 +1837,13 @@ void handleTimers() {
 // ==========================================
 
 void handleWiFi() {
-
-  static unsigned long lastCheck = 0;
-
-  if (millis() - lastCheck < 10000) {
-    return;
-  }
-
-  lastCheck = millis();
-
-  if (WiFi.status() != WL_CONNECTED) {
-
-    Serial.println("WiFi disconnected");
-
-    if (WiFi.SSID().length() > 0) {
-  WiFi.reconnect();
-    }
-  }
+  static unsigned long lastAttempt = 0;
+  if (WiFi.status() == WL_CONNECTED || wifiSSID.length() == 0) return;
+  if (millis() - lastAttempt < WIFI_INTERVAL) return;
+  lastAttempt = millis();
+  Serial.println("WiFi STA belum terhubung, mencoba ulang...");
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 }
 
 
@@ -2022,54 +1942,28 @@ void setup() {
   loadSettings();
 
   // ------------------------------------------
-  // WIFI CONNECTION
+  // WIFI: ACCESS POINT + STATION
   // ------------------------------------------
-
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
+  startAccessPoint();
 
   if (wifiSSID.length() > 0) {
-
     connectSavedWiFi();
-
-    Serial.println("Connecting saved WiFi...");
-
     unsigned long startAttempt = millis();
-
-    while (
-      WiFi.status() != WL_CONNECTED &&
-      millis() - startAttempt < 20000
-    ) {
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
       delay(250);
       yield();
     }
   }
 
-  // ------------------------------------------
-  // WIFI RESULT
-  // ------------------------------------------
-
   if (WiFi.status() == WL_CONNECTED) {
-
-    Serial.println("WiFi Connected");
-
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-
-    // AP dimatikan setelah STA berhasil
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-
-    // NTP
+    Serial.println("WiFi Router Connected");
+    Serial.print("Router IP: "); Serial.println(WiFi.localIP());
+    Serial.print("Setup AP tetap aktif, IP: "); Serial.println(WiFi.softAPIP());
     setupTime();
-
   } else {
-
-    Serial.println("WiFi unavailable");
-    Serial.println("Starting configuration AP");
-
-    // AP hanya untuk konfigurasi / pemulihan
-    startAccessPoint();
+    Serial.println("WiFi router belum terhubung.");
+    Serial.println("Gunakan AP NOVIA HOME SETUP untuk konfigurasi.");
+    Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
   }
 
   // ------------------------------------------
