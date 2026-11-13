@@ -116,6 +116,19 @@ struct LampSchedule {
 
 LampSchedule schedules[3];
 
+// ==========================================
+// TIMER STRUCTURE
+// ==========================================
+
+struct TimerState {
+  bool active = false;
+  bool targetState = false;
+  uint32_t startMillis = 0;
+  uint32_t durationMs = 0;
+};
+
+TimerState timers[4];
+
 // ======================================================
 // STORAGE
 // ======================================================
@@ -1230,7 +1243,7 @@ void setupRoutes() {
       return;
     }
 
-    bool newState = !relayState[ch];
+    bool newState = !relayStatus[ch];
 
     // Manual control: membatalkan timer perangkat
     timers[ch].active = false;
@@ -1369,7 +1382,7 @@ void setupRoutes() {
 
       if (i > 0) json += ",";
 
-      json += (relayState[i] ? "true" : "false");
+      json += (relayStatus[i] ? "true" : "false");
     }
 
     json += "]";
@@ -1907,8 +1920,8 @@ void handleWiFi() {
 
     Serial.println("WiFi disconnected");
 
-    if (savedSSID.length() > 0) {
-      WiFi.reconnect();
+    if (WiFi.SSID().length() > 0) {
+  WiFi.reconnect();
     }
   }
 }
