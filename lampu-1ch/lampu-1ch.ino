@@ -1983,6 +1983,122 @@ void handleNTP() {
 }
 
 
+
+// ==========================================
+// MAIN SETUP
+// ==========================================
+
+void setup() {
+
+  Serial.begin(115200);
+  delay(500);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("       NOVIA HOME V3");
+  Serial.println("       SYSTEM STARTING");
+  Serial.println("================================");
+
+  // ------------------------------------------
+  // INITIALIZE RELAYS
+  // ------------------------------------------
+
+  for (int i = 0; i < 4; i++) {
+
+    pinMode(relayPins[i], OUTPUT);
+
+    // Active LOW: HIGH = OFF
+    digitalWrite(relayPins[i], HIGH);
+
+    relayStatus[i] = false;
+  }
+
+  Serial.println("Relay initialized");
+
+  // ------------------------------------------
+  // LOAD SAVED SETTINGS
+  // ------------------------------------------
+
+  loadSettings();
+
+  // ------------------------------------------
+  // WIFI CONNECTION
+  // ------------------------------------------
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+
+  if (wifiSSID.length() > 0) {
+
+    connectSavedWiFi();
+
+    Serial.println("Connecting saved WiFi...");
+
+    unsigned long startAttempt = millis();
+
+    while (
+      WiFi.status() != WL_CONNECTED &&
+      millis() - startAttempt < 20000
+    ) {
+      delay(250);
+      yield();
+    }
+  }
+
+  // ------------------------------------------
+  // WIFI RESULT
+  // ------------------------------------------
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("WiFi Connected");
+
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    // AP dimatikan setelah STA berhasil
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+
+    // NTP
+    setupTime();
+
+  } else {
+
+    Serial.println("WiFi unavailable");
+    Serial.println("Starting configuration AP");
+
+    // AP hanya untuk konfigurasi / pemulihan
+    startAccessPoint();
+  }
+
+  // ------------------------------------------
+  // BLYNK CONFIGURATION
+  // ------------------------------------------
+
+  Blynk.config(BLYNK_AUTH_TOKEN);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.connect(1000);
+  }
+
+  // ------------------------------------------
+  // WEB SERVER
+  // ------------------------------------------
+
+  setupRoutes();
+
+  Serial.println("Web server initialized");
+
+  // ------------------------------------------
+  // SYSTEM READY
+  // ------------------------------------------
+
+  Serial.println("================================");
+  Serial.println("       NOVIA HOME READY");
+  Serial.println("================================");
+}
+
 // ==========================================
 // MAIN LOOP
 // ==========================================
