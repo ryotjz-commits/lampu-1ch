@@ -1,6 +1,6 @@
 /*
   ================================================================
-  NOVIA HOME V1.2.2
+  NOVIA HOME V1.3.0
   ESP32 DevKit V1 - Android ArduinoDroid friendly single-file sketch
   ================================================================
 
@@ -22,6 +22,9 @@
     - Unique ESP32 chip identity
     - Editable device display name stored in NVS
     - Configuration backup download and restore
+    - Daily ON/OFF scheduler for each relay (NVS persistent)
+    - Countdown auto-OFF timer for each relay (survives restart after time sync)
+    - NTP clock with WIB/WITA/WIT timezone selection
 
   BEFORE COMPILING:
     1. Fill in BLYNK_TEMPLATE_ID, BLYNK_TEMPLATE_NAME, BLYNK_AUTH_TOKEN.
@@ -30,19 +33,21 @@
     4. Install the "Blynk" library in ArduinoDroid.
     5. Select an ESP32 board and a partition scheme with OTA support.
     6. Backup files contain Wi-Fi credentials; keep them private.
+    7. Scheduler needs internet once to synchronize time via NTP.
 
   SECURITY:
     The local web dashboard uses HTTP Basic Authentication (not HTTPS).
     Use only on a trusted local network. Never port-forward it to the internet.
 */
 
-#define BLYNK_TEMPLATE_ID   "TMPLxxxxxxxx"
-#define BLYNK_TEMPLATE_NAME "NOVIA HOME"
-#define BLYNK_AUTH_TOKEN    "YOUR_BLYNK_AUTH_TOKEN"
+#define BLYNK_TEMPLATE_ID   "TMPL6Yk8Hycr-"
+#define BLYNK_TEMPLATE_NAME "Novia Home"
+#define BLYNK_AUTH_TOKEN    "uUhUdnlB22cqJfKinHQu8yGMXLRbgzf1"
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <time.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
 #include <BlynkSimpleEsp32.h>
@@ -50,7 +55,7 @@
 // ------------------------- USER CONFIG ---------------------------
 
 static const char DEVICE_NAME[] = "NOVIA_HOME";
-static const char FW_VERSION[]  = "1.2.2";
+static const char FW_VERSION[]  = "1.3.0";
 
 static const uint8_t RELAY_PINS[4] = {23, 22, 21, 19};
 static const uint8_t RELAY_COUNT = 4;
@@ -60,12 +65,12 @@ static const char DEFAULT_WIFI_SSID[] = "";
 static const char DEFAULT_WIFI_PASS[] = "";
 
 static const char AP_SSID[] = "NOVIA-HOME-SETUP";
-static const char AP_PASSWORD[] = "NoviaSetup26!";
+static const char AP_PASSWORD[] = "Noke0710";
 
-static const char WEB_USER[] = "admin";
-static const char WEB_PASSWORD[] = "ChangeThisWebPass!";
+static const char WEB_USER[] = "Novia";
+static const char WEB_PASSWORD[] = "Nurmal";
 
-static const char OTA_PASSWORD[] = "ChangeThisOTAPass!";
+static const char OTA_PASSWORD[] = "Noke0710";
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 25000;
 static const uint32_t WIFI_RETRY_INTERVAL_MS  = 15000;
@@ -100,6 +105,15 @@ unsigned long lastBlynkAttempt = 0;
 unsigned long lastTelemetry = 0;
 unsigned long bootMillis = 0;
 
+// Daily scheduler and countdown timers.
+bool scheduleEnabled[RELAY_COUNT] = {false, false, false, false};
+uint16_t scheduleOnMinute[RELAY_COUNT] = {420, 420, 420, 420};
+uint16_t scheduleOffMinute[RELAY_COUNT] = {1380, 1380, 1380, 1380};
+uint64_t timerEndEpoch[RELAY_COUNT] = {0, 0, 0, 0};
+int32_t timezoneOffsetSeconds = 7 * 3600; // Default: WIB (UTC+7)
+bool ntpConfigured = false;
+time_t lastScheduleMinute = 0;
+
 // ------------------------- DECLARATIONS ----------------------------
 
 void storageBegin();
@@ -107,6 +121,18 @@ void storageLoadWiFi();
 void storageSaveWiFi(const String &ssid, const String &password);
 void storageLoadDeviceName();
 void storageSaveDeviceName(const String &name);
+void schedulerLoad();
+void schedulerSave();
+void schedulerConfigureClock();
+bool clockIsValid();
+String currentLocalTime();
+bool parseTimeValue(const String &value, uint16_t &minuteOfDay);
+String formatMinuteOfDay(uint16_t minuteOfDay);
+void schedulerHandle();
+void schedulerApplyRelay(uint8_t index, bool on);
+void webHandleSchedulePage();
+void webHandleSaveSchedule();
+void webHandleSaveTimer();
 String makeDeviceId();
 bool isValidDeviceName(const String &name);
 String htmlEscape(const String &value);
@@ -225,24 +251,37 @@ String htmlEscape(const String &value) {
 
 String makeConfigBackup() {
   String backup;
-  backup.reserve(220);
-  backup += F("NOVIA_HOME_CONFIG_V1\n");
+  backup.reserve(900);
+  backup += F("NOVIA_HOME_CONFIG_V2\n");
   backup += F("device_name=");
   backup += deviceName;
   backup += F("\nwifi_ssid=");
   backup += savedSSID;
   backup += F("\nwifi_pass=");
   backup += savedPassword;
+  backup += F("\ntimezone_offset=");
+  backup += String(timezoneOffsetSeconds);
   backup += F("\n");
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    backup += F("schedule_enabled"); backup += String(i + 1); backup += F("="); backup += scheduleEnabled[i] ? F("1") : F("0"); backup += F("\n");
+    backup += F("schedule_on"); backup += String(i + 1); backup += F("="); backup += formatMinuteOfDay(scheduleOnMinute[i]); backup += F("\n");
+    backup += F("schedule_off"); backup += String(i + 1); backup += F("="); backup += formatMinuteOfDay(scheduleOffMinute[i]); backup += F("\n");
+  }
   return backup;
 }
 
 bool restoreConfigBackup(const String &backup) {
-  if (!backup.startsWith("NOVIA_HOME_CONFIG_V1")) return false;
+  bool backupV1 = backup.startsWith("NOVIA_HOME_CONFIG_V1");
+  bool backupV2 = backup.startsWith("NOVIA_HOME_CONFIG_V2");
+  if (!backupV1 && !backupV2) return false;
 
   String restoredName;
   String restoredSSID;
   String restoredPassword;
+  int32_t restoredTimezone = timezoneOffsetSeconds;
+  bool restoredEnabled[RELAY_COUNT] = {false, false, false, false};
+  uint16_t restoredOn[RELAY_COUNT] = {420, 420, 420, 420};
+  uint16_t restoredOff[RELAY_COUNT] = {1380, 1380, 1380, 1380};
   int start = backup.indexOf('\n');
   if (start < 0) return false;
   start++;
@@ -252,7 +291,7 @@ bool restoreConfigBackup(const String &backup) {
     if (end < 0) end = backup.length();
 
     String line = backup.substring(start, end);
-    if (line.endsWith("\\r")) line.remove(line.length() - 1);
+    if (line.endsWith("\r")) line.remove(line.length() - 1);
     int separator = line.indexOf('=');
     if (separator > 0) {
       String key = line.substring(0, separator);
@@ -261,19 +300,141 @@ bool restoreConfigBackup(const String &backup) {
       if (key == "device_name") restoredName = value;
       else if (key == "wifi_ssid") restoredSSID = value;
       else if (key == "wifi_pass") restoredPassword = value;
+      else if (key == "timezone_offset") restoredTimezone = value.toInt();
+      else {
+        for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+          String suffix = String(i + 1);
+          if (key == String("schedule_enabled") + suffix) restoredEnabled[i] = (value == "1");
+          else if (key == String("schedule_on") + suffix) parseTimeValue(value, restoredOn[i]);
+          else if (key == String("schedule_off") + suffix) parseTimeValue(value, restoredOff[i]);
+        }
+      }
     }
     start = end + 1;
   }
 
   restoredName.trim();
   if (!isValidDeviceName(restoredName) ||
-      restoredSSID.length() > 32 || restoredPassword.length() > 64) {
+      restoredSSID.length() > 32 || restoredPassword.length() > 64 ||
+      (restoredTimezone != 7 * 3600 && restoredTimezone != 8 * 3600 && restoredTimezone != 9 * 3600)) {
     return false;
   }
 
   storageSaveDeviceName(restoredName);
   storageSaveWiFi(restoredSSID, restoredPassword);
+  timezoneOffsetSeconds = restoredTimezone;
+  preferences.putInt("tz_offset", timezoneOffsetSeconds);
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    scheduleEnabled[i] = restoredEnabled[i];
+    scheduleOnMinute[i] = restoredOn[i];
+    scheduleOffMinute[i] = restoredOff[i];
+  }
+  schedulerSave();
+  schedulerConfigureClock();
   return true;
+}
+
+// ------------------------- SCHEDULER / CLOCK ----------------------
+
+void schedulerLoad() {
+  timezoneOffsetSeconds = preferences.getInt("tz_offset", 7 * 3600);
+  if (timezoneOffsetSeconds != 7 * 3600 && timezoneOffsetSeconds != 8 * 3600 && timezoneOffsetSeconds != 9 * 3600) {
+    timezoneOffsetSeconds = 7 * 3600;
+  }
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    String enKey = String("sc_en") + i;
+    String onKey = String("sc_on") + i;
+    String offKey = String("sc_off") + i;
+    String timerKey = String("tm_end") + i;
+    scheduleEnabled[i] = preferences.getBool(enKey.c_str(), false);
+    int onValue = preferences.getInt(onKey.c_str(), 420);
+    int offValue = preferences.getInt(offKey.c_str(), 1380);
+    scheduleOnMinute[i] = (onValue >= 0 && onValue < 1440) ? (uint16_t)onValue : 420;
+    scheduleOffMinute[i] = (offValue >= 0 && offValue < 1440) ? (uint16_t)offValue : 1380;
+    timerEndEpoch[i] = preferences.getULong64(timerKey.c_str(), 0);
+  }
+}
+
+void schedulerSave() {
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    String enKey = String("sc_en") + i;
+    String onKey = String("sc_on") + i;
+    String offKey = String("sc_off") + i;
+    preferences.putBool(enKey.c_str(), scheduleEnabled[i]);
+    preferences.putInt(onKey.c_str(), scheduleOnMinute[i]);
+    preferences.putInt(offKey.c_str(), scheduleOffMinute[i]);
+  }
+}
+
+void schedulerConfigureClock() {
+  configTime(timezoneOffsetSeconds, 0, "pool.ntp.org", "time.google.com", "time.nist.gov");
+  ntpConfigured = true;
+}
+
+bool clockIsValid() {
+  return time(nullptr) > 1700000000;
+}
+
+String currentLocalTime() {
+  if (!clockIsValid()) return String("Belum tersinkron");
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+  char buffer[24];
+  strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", &timeinfo);
+  return String(buffer);
+}
+
+bool parseTimeValue(const String &value, uint16_t &minuteOfDay) {
+  if (value.length() != 5 || value.charAt(2) != ':') return false;
+  if (!isDigit(value.charAt(0)) || !isDigit(value.charAt(1)) ||
+      !isDigit(value.charAt(3)) || !isDigit(value.charAt(4))) return false;
+  int hour = value.substring(0, 2).toInt();
+  int minute = value.substring(3, 5).toInt();
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+  minuteOfDay = (uint16_t)(hour * 60 + minute);
+  return true;
+}
+
+String formatMinuteOfDay(uint16_t minuteOfDay) {
+  char value[6];
+  snprintf(value, sizeof(value), "%02u:%02u", minuteOfDay / 60, minuteOfDay % 60);
+  return String(value);
+}
+
+void schedulerApplyRelay(uint8_t index, bool on) {
+  if (index >= RELAY_COUNT) return;
+  relayWrite(index, on);
+  if (Blynk.connected()) Blynk.virtualWrite((int)(V0 + index), on ? 1 : 0);
+}
+
+void schedulerHandle() {
+  if (!clockIsValid()) return;
+  time_t now = time(nullptr);
+
+  // Apply each daily schedule once per local minute.
+  time_t minuteKey = now / 60;
+  if (minuteKey != lastScheduleMinute) {
+    lastScheduleMinute = minuteKey;
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    uint16_t currentMinute = (uint16_t)(timeinfo.tm_hour * 60 + timeinfo.tm_min);
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+      if (!scheduleEnabled[i]) continue;
+      if (currentMinute == scheduleOnMinute[i]) schedulerApplyRelay(i, true);
+      if (currentMinute == scheduleOffMinute[i]) schedulerApplyRelay(i, false);
+    }
+  }
+
+  // Countdown timers always switch the selected relay OFF at expiry.
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    if (timerEndEpoch[i] > 0 && (uint64_t)now >= timerEndEpoch[i]) {
+      schedulerApplyRelay(i, false);
+      timerEndEpoch[i] = 0;
+      String timerKey = String("tm_end") + i;
+      preferences.putULong64(timerKey.c_str(), 0);
+    }
+  }
 }
 
 // ------------------------- RELAY MANAGER --------------------------
@@ -457,6 +618,9 @@ void webBegin() {
 void webRegisterRoutes() {
   server.on("/", HTTP_GET, webHandleRoot);
   server.on("/wifi", HTTP_GET, webHandleWiFiPage);
+  server.on("/schedule", HTTP_GET, webHandleSchedulePage);
+  server.on("/saveschedule", HTTP_POST, webHandleSaveSchedule);
+  server.on("/savetimer", HTTP_POST, webHandleSaveTimer);
   server.on("/device", HTTP_GET, webHandleDevicePage);
   server.on("/savedevice", HTTP_POST, webHandleSaveDevice);
   server.on("/backup", HTTP_GET, webHandleBackup);
@@ -555,6 +719,7 @@ void webHandleRoot() {
   page += F("<div class='sectionhead'><h2>Pengaturan perangkat</h2><span class='sectionhint'>QUICK ACCESS</span></div>");
   page += F("<div class='toolsgrid'><a class='tool' href='/device'><span class='toolicon'>ID</span><span>Identitas</span></a>");
   page += F("<a class='tool' href='/wifi'><span class='toolicon'>Wi</span><span>Wi-Fi</span></a>");
+  page += F("<a class='tool' href='/schedule'><span class='toolicon'>◷</span><span>Scheduler</span></a>");
   page += F("<a class='tool' href='/backup'><span class='toolicon'>↓</span><span>Backup</span></a>");
   page += F("<a class='tool' href='/restore'><span class='toolicon'>↑</span><span>Restore</span></a>");
   page += F("<a class='tool' href='/update'><span class='toolicon'>↻</span><span>Firmware</span></a>");
@@ -581,6 +746,99 @@ void webHandleRoot() {
 
   page += htmlFooter();
   server.send(200, "text/html; charset=utf-8", page);
+}
+
+void webHandleSchedulePage() {
+  if (!webAuthenticate()) return;
+
+  String page = htmlHeader("Scheduler & Timer");
+  page += F("<div class='card'><h2>Jam perangkat</h2><p class='muted'>Waktu lokal: <b id='clockValue'>");
+  page += currentLocalTime();
+  page += F("</b></p><p class='muted'>Jam otomatis disinkronkan melalui internet (NTP). Pilih zona waktu yang sesuai.</p>");
+  page += F("<form method='post' action='/saveschedule'><label>Zona waktu</label><select name='tz' style='width:100%;padding:12px;border:1px solid #dce1e9;border-radius:10px;margin:7px 0 16px'>");
+  page += F("<option value='7'"); if (timezoneOffsetSeconds == 7 * 3600) page += F(" selected"); page += F(">WIB — UTC+7</option>");
+  page += F("<option value='8'"); if (timezoneOffsetSeconds == 8 * 3600) page += F(" selected"); page += F(">WITA — UTC+8</option>");
+  page += F("<option value='9'"); if (timezoneOffsetSeconds == 9 * 3600) page += F(" selected"); page += F(">WIT — UTC+9</option></select>");
+  page += F("<h2>Jadwal harian</h2><p class='muted'>Setiap relay dapat menyala dan mati otomatis setiap hari. Jadwal dinonaktifkan secara default.</p>");
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    page += F("<div style='border:1px solid #e8ebf1;border-radius:13px;padding:14px;margin:12px 0'>");
+    page += F("<label style='font-size:14px'>Relay "); page += String(i + 1); page += F(" · GPIO "); page += String(RELAY_PINS[i]); page += F("</label><div style='margin:10px 0'><label style='font-weight:600'><input type='checkbox' name='en"); page += String(i + 1); page += F("' value='1' style='width:auto;margin:0 7px 0 0'");
+    if (scheduleEnabled[i]) page += F(" checked");
+    page += F(">Aktifkan jadwal harian</label></div><div style='display:grid;grid-template-columns:1fr 1fr;gap:10px'><div><label>NYALAKAN</label><input type='time' name='on"); page += String(i + 1); page += F("' value='"); page += formatMinuteOfDay(scheduleOnMinute[i]); page += F("' required></div><div><label>MATIKAN</label><input type='time' name='off"); page += String(i + 1); page += F("' value='"); page += formatMinuteOfDay(scheduleOffMinute[i]); page += F("' required></div></div></div>");
+  }
+  page += F("<button type='submit'>Simpan Semua Jadwal</button></form></div>");
+
+  page += F("<div class='card'><h2>Timer otomatis mati</h2><p class='muted'>Masukkan durasi dalam menit. Saat timer dimulai, relay langsung menyala dan akan mati otomatis saat waktu habis. Timer tetap tersimpan setelah restart selama jam perangkat sudah tersinkron.</p>");
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    page += F("<div style='display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid #edf0f4;padding:12px 0;flex-wrap:wrap'><div><b>Relay "); page += String(i + 1); page += F("</b><div class='muted'>");
+    if (timerEndEpoch[i] > 0 && clockIsValid() && timerEndEpoch[i] > (uint64_t)time(nullptr)) {
+      page += F("Aktif · sisa "); page += String((timerEndEpoch[i] - (uint64_t)time(nullptr) + 59) / 60); page += F(" menit");
+    } else page += F("Tidak ada timer aktif");
+    page += F("</div></div><form method='post' action='/savetimer' style='display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0'><input type='hidden' name='ch' value='"); page += String(i + 1); page += F("'><input type='number' name='minutes' min='1' max='10080' value='30' required style='width:86px;margin:0;padding:10px'><button type='submit'>Mulai</button><button class='off' type='submit' name='cancel' value='1'>Batal</button></form></div>");
+  }
+  page += F("<p class='muted'>Batas timer: 1 sampai 10.080 menit (7 hari). Tombol Batal menghapus timer relay tersebut.</p><a class='btn off' href='/'>Kembali ke Dashboard</a></div>");
+  page += F("<script>setInterval(function(){fetch('/api/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{var e=document.getElementById('clockValue');if(e)e.textContent=d.local_time;}).catch(()=>{});},5000);</script>");
+  page += htmlFooter();
+  server.send(200, "text/html; charset=utf-8", page);
+}
+
+void webHandleSaveSchedule() {
+  if (!webAuthenticate()) return;
+  int tz = server.arg("tz").toInt();
+  if (tz != 7 && tz != 8 && tz != 9) {
+    server.send(400, "text/plain", "Zona waktu tidak valid.");
+    return;
+  }
+  uint16_t newOn[RELAY_COUNT];
+  uint16_t newOff[RELAY_COUNT];
+  bool newEnabled[RELAY_COUNT];
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    String suffix = String(i + 1);
+    if (!parseTimeValue(server.arg(String("on") + suffix), newOn[i]) ||
+        !parseTimeValue(server.arg(String("off") + suffix), newOff[i]) ||
+        newOn[i] == newOff[i]) {
+      server.send(400, "text/plain", "Format jam tidak valid atau jam ON dan OFF sama. Periksa kembali semua relay.");
+      return;
+    }
+    newEnabled[i] = server.hasArg(String("en") + suffix);
+  }
+  timezoneOffsetSeconds = tz * 3600;
+  preferences.putInt("tz_offset", timezoneOffsetSeconds);
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    scheduleEnabled[i] = newEnabled[i];
+    scheduleOnMinute[i] = newOn[i];
+    scheduleOffMinute[i] = newOff[i];
+  }
+  schedulerSave();
+  schedulerConfigureClock();
+  lastScheduleMinute = 0;
+  server.sendHeader("Location", "/schedule");
+  server.send(303, "text/plain", "Jadwal tersimpan");
+}
+
+void webHandleSaveTimer() {
+  if (!webAuthenticate()) return;
+  int channel = server.arg("ch").toInt();
+  int minutes = server.arg("minutes").toInt();
+  if (server.hasArg("cancel")) minutes = 0;
+  if (channel < 1 || channel > RELAY_COUNT || minutes < 0 || minutes > 10080) {
+    server.send(400, "text/plain", "Relay atau durasi timer tidak valid.");
+    return;
+  }
+  if (minutes == 0) {
+    timerEndEpoch[channel - 1] = 0;
+  } else {
+    if (!clockIsValid()) {
+      server.send(409, "text/plain", "Jam perangkat belum tersinkron. Sambungkan ESP32 ke internet lalu coba lagi.");
+      return;
+    }
+    timerEndEpoch[channel - 1] = (uint64_t)time(nullptr) + (uint64_t)minutes * 60ULL;
+    schedulerApplyRelay(channel - 1, true);
+  }
+  String timerKey = String("tm_end") + (channel - 1);
+  preferences.putULong64(timerKey.c_str(), timerEndEpoch[channel - 1]);
+  server.sendHeader("Location", "/schedule");
+  server.send(303, "text/plain", "Timer diperbarui");
 }
 
 void webHandleDevicePage() {
@@ -634,7 +892,7 @@ void webHandleRestorePage() {
 
   String page = htmlHeader("Pulihkan Konfigurasi");
   page += F("<div class='card'><h2>Pulihkan Konfigurasi</h2>");
-  page += F("<p class='muted'>Pilih file NOVIA_HOME_CONFIG.txt hasil backup. Isinya akan dimasukkan ke kolom di bawah. Setelah dipulihkan, ESP32 akan restart.</p>");
+  page += F("<p class='muted'>Pilih file NOVIA_HOME_CONFIG.txt hasil backup (format V1 atau V2). Isinya akan dimasukkan ke kolom di bawah. Setelah dipulihkan, ESP32 akan restart.</p>");
   page += F("<input type='file' id='backupFile' accept='.txt,text/plain'>");
   page += F("<form method='post' action='/restoreconfig' onsubmit=\"return confirm('Pulihkan konfigurasi dan restart ESP32?')\">");
   page += F("<textarea id='backupText' name='backup' rows='10' required style='width:100%;box-sizing:border-box;padding:10px;border:1px solid #cfd6e2;border-radius:9px'></textarea>");
@@ -650,7 +908,7 @@ void webHandleRestoreConfig() {
   if (!webAuthenticate()) return;
 
   String backup = server.arg("backup");
-  if (backup.length() > 512 || !restoreConfigBackup(backup)) {
+  if (backup.length() > 2048 || !restoreConfigBackup(backup)) {
     server.send(400, "text/plain", "File backup tidak valid atau formatnya tidak dikenali. Tidak ada konfigurasi yang dipulihkan.");
     return;
   }
@@ -724,10 +982,22 @@ String jsonStatus() {
   json += String((millis() - bootMillis) / 1000);
   json += ",\"blynk_connected\":";
   json += Blynk.connected() ? "true" : "false";
-  json += ",\"relays\":[";
+  json += ",\"time_synced\":";
+  json += clockIsValid() ? "true" : "false";
+  json += ",\"local_time\":\"";
+  String localTime = currentLocalTime();
+  for (size_t i = 0; i < localTime.length(); i++) { if (localTime.charAt(i) == '\"') json += "\\\""; else json += localTime.charAt(i); }
+  json += "\",\"relays\":[";
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     if (i > 0) json += ",";
     json += relayState[i] ? "true" : "false";
+  }
+  json += "],\"timer_remaining\":[";
+  uint64_t nowEpoch = clockIsValid() ? (uint64_t)time(nullptr) : 0;
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    if (i > 0) json += ",";
+    uint64_t remaining = (timerEndEpoch[i] > nowEpoch && nowEpoch > 0) ? timerEndEpoch[i] - nowEpoch : 0;
+    json += String((unsigned long)remaining);
   }
   json += "]}";
   return json;
@@ -881,13 +1151,14 @@ void setup() {
 
   Serial.println();
   Serial.println("================================");
-  Serial.println(" NOVIA HOME Firmware V1.2.2");
+  Serial.println(" NOVIA HOME Firmware V1.3.0");
   Serial.println("================================");
 
   relayBegin();
   storageBegin();
   storageLoadWiFi();
   storageLoadDeviceName();
+  schedulerLoad();
   deviceId = makeDeviceId();
   Serial.print("Device ID: ");
   Serial.println(deviceId);
@@ -899,6 +1170,7 @@ void setup() {
   if (wifiIsConnected()) {
     otaBegin();
     blynkBegin();
+    schedulerConfigureClock();
   }
 }
 
@@ -908,6 +1180,7 @@ void loop() {
   // Initialize network services if Wi-Fi connects after AP fallback/retry.
   if (wifiIsConnected() && !otaStarted) otaBegin();
   if (wifiIsConnected() && !blynkConfigured) blynkBegin();
+  if (wifiIsConnected() && !ntpConfigured) schedulerConfigureClock();
 
   if (webServerStarted) {
     server.handleClient();
@@ -915,6 +1188,7 @@ void loop() {
 
   otaHandle();
   blynkHandle();
+  schedulerHandle();
 
   if (Blynk.connected() &&
       millis() - lastTelemetry >= 10000) {
