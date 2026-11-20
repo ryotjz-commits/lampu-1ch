@@ -1,6 +1,6 @@
 /*
   ================================================================
-  NOVIA HOME V1.2.1
+  NOVIA HOME V1.2.2
   ESP32 DevKit V1 - Android ArduinoDroid friendly single-file sketch
   ================================================================
 
@@ -36,9 +36,9 @@
     Use only on a trusted local network. Never port-forward it to the internet.
 */
 
-#define BLYNK_TEMPLATE_ID   "TMPL6Yk8Hycr-"
-#define BLYNK_TEMPLATE_NAME "Novia Home"
-#define BLYNK_AUTH_TOKEN    "uUhUdnlB22cqJfKinHQu8yGMXLRbgzf1"
+#define BLYNK_TEMPLATE_ID   "TMPLxxxxxxxx"
+#define BLYNK_TEMPLATE_NAME "NOVIA HOME"
+#define BLYNK_AUTH_TOKEN    "YOUR_BLYNK_AUTH_TOKEN"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -50,7 +50,7 @@
 // ------------------------- USER CONFIG ---------------------------
 
 static const char DEVICE_NAME[] = "NOVIA_HOME";
-static const char FW_VERSION[]  = "1.2.1";
+static const char FW_VERSION[]  = "1.2.2";
 
 static const uint8_t RELAY_PINS[4] = {23, 22, 21, 19};
 static const uint8_t RELAY_COUNT = 4;
@@ -60,12 +60,12 @@ static const char DEFAULT_WIFI_SSID[] = "";
 static const char DEFAULT_WIFI_PASS[] = "";
 
 static const char AP_SSID[] = "NOVIA-HOME-SETUP";
-static const char AP_PASSWORD[] = "Noke0710";
+static const char AP_PASSWORD[] = "NoviaSetup26!";
 
-static const char WEB_USER[] = "Novia";
-static const char WEB_PASSWORD[] = "Nurmala";
+static const char WEB_USER[] = "admin";
+static const char WEB_PASSWORD[] = "ChangeThisWebPass!";
 
-static const char OTA_PASSWORD[] = "Noke0710";
+static const char OTA_PASSWORD[] = "ChangeThisOTAPass!";
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 25000;
 static const uint32_t WIFI_RETRY_INTERVAL_MS  = 15000;
@@ -573,7 +573,10 @@ void webHandleRoot() {
   page += F("var ip=document.getElementById('ipValue');if(ip)ip.textContent=d.ip;");
   page += F("var rs=document.getElementById('rssiValue');if(rs)rs.textContent=w?d.rssi+' dBm':'—';");
   page += F("if(d.relays){d.relays.forEach((v,i)=>{var e=document.getElementById('relayState'+(i+1));if(e){e.textContent=v?'ON':'OFF';e.className='statepill'+(v?' on':'');}})}");
-  page += F("}).catch(()=>{});}setInterval(refreshStatus,5000);");
+  page += F("}).catch(()=>{});}");
+  // Intercept relay links so switching does not reload the dashboard or move scroll position.
+  page += F("document.querySelectorAll('.relayactions a').forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();var link=this;link.style.pointerEvents='none';link.style.opacity='.55';fetch(link.href,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('relay');refreshStatus();}).catch(function(){ }).finally(function(){link.style.pointerEvents='';link.style.opacity='';});});});");
+  page += F("setInterval(refreshStatus,5000);");
   page += F("</script>");
 
   page += htmlFooter();
@@ -878,7 +881,7 @@ void setup() {
 
   Serial.println();
   Serial.println("================================");
-  Serial.println(" NOVIA HOME Firmware V1.2.1");
+  Serial.println(" NOVIA HOME Firmware V1.2.2");
   Serial.println("================================");
 
   relayBegin();
