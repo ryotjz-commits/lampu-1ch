@@ -1,6 +1,6 @@
 /*
   ================================================================
-  NOVIA HOME V1.3.0
+  NOVIA HOME V1.3.0 - COMPATIBILITY FIX 1
   ESP32 DevKit V1 - Android ArduinoDroid friendly single-file sketch
   ================================================================
 
@@ -68,7 +68,7 @@ static const char AP_SSID[] = "NOVIA-HOME-SETUP";
 static const char AP_PASSWORD[] = "Noke0710";
 
 static const char WEB_USER[] = "Novia";
-static const char WEB_PASSWORD[] = "Nurmal";
+static const char WEB_PASSWORD[] = "Nurmala";
 
 static const char OTA_PASSWORD[] = "Noke0710";
 
@@ -381,7 +381,9 @@ String currentLocalTime() {
   struct tm timeinfo;
   localtime_r(&now, &timeinfo);
   char buffer[24];
-  strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", &timeinfo);
+  snprintf(buffer, sizeof(buffer), "%02d-%02d-%04d %02d:%02d:%02d",
+           timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
   return String(buffer);
 }
 
